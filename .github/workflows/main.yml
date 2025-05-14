@@ -1,0 +1,204 @@
+name: Optimized Process OSM CSV Chunk
+
+on:
+  workflow_dispatch:
+    inputs:
+      part:
+        description: 'Chunk number to process (01–63). Set to "all" to run build_index then all parts sequentially, or specific part number.'
+        required: true
+        default: '01'
+
+jobs:
+  build_index:
+    runs-on: ubuntu-latest
+    outputs:
+      index_cache_hit: ${{ steps.cache-osm-index.outputs.cache-hit }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10' # Match original
+
+      - name: Cache pip dependencies
+        id: cache-pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }} # Assuming you'll create a requirements.txt
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          # Create a requirements.txt for better caching and consistency
+          echo "osmium" > requirements.txt
+          echo "shapely" >> requirements.txt
+          echo "rtree" >> requirements.txt
+          echo "psycopg2-binary" >> requirements.txt
+          echo "geopy" >> requirements.txt
+          pip install -r requirements.txt
+
+      - name: Cache Vietnam OSM PBF
+        id: cache-pbf
+        uses: actions/cache@v4
+        with:
+          path: vietnam-latest.osm.pbf
+          key: osm-pbf-${{ runner.os }}-v1-${{ hashFiles('vietnam-latest.osm.pbf') }} # Key on file hash if it might change
+          restore-keys: |
+            osm-pbf-${{ runner.os }}-v1-
+
+      - name: Download PBF if missing
+        if: steps.cache-pbf.outputs.cache-hit != 'true'
+        run: |
+          echo "Downloading PBF file..."
+          curl -SL -o vietnam-latest.osm.pbf https://download.geofabrik.de/asia/vietnam-latest.osm.pbf
+
+      - name: Cache OSM Index and WayData
+        id: cache-osm-index
+        uses: actions/cache@v4
+        with:
+          path: |
+            spatial_index.idx
+            way_data_cache.pkl
+          key: osm-index-cache-${{ runner.os }}-${{ hashFiles('vietnam-latest.osm.pbf') }}
+          # restore-keys are not strictly needed here as build_index job creates it if missing
+
+      - name: Build OSM Index (if not cached)
+        if: steps.cache-osm-index.outputs.cache-hit != 'true'
+        run: |
+          echo "Building OSM Index and Cache..."
+          python build_osm_index.py \
+            --osm-pbf vietnam-latest.osm.pbf \
+            --output-index spatial_index.idx \
+            --output-cache way_data_cache.pkl
+      - name: Verify index files created
+        if: steps.cache-osm-index.outputs.cache-hit != 'true'
+        run: |
+          ls -l spatial_index.idx way_data_cache.pkl
+          echo "Index and cache files built."
+      - name: Index files found in cache
+        if: steps.cache-osm-index.outputs.cache-hit == 'true'
+        run: |
+          echo "Index and cache files restored from cache."
+          ls -l spatial_index.idx way_data_cache.pkl
+
+  process_chunk:
+    needs: build_index
+    runs-on: ubuntu-latest
+    # Only run if build_index succeeded and (part is not 'all' OR index was built/found)
+    # The 'all' case is handled by trigger_next_chunk logic
+    if: ${{ needs.build_index.result == 'success' && (github.event.inputs.part != 'all' || needs.build_index.outputs.index_cache_hit == 'true' || needs.build_index.outputs.index_cache_hit != 'true' ) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Cache pip dependencies
+        id: cache-pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          # Assuming requirements.txt is in the repo or created by build_index job's checkout
+          # If not, repeat the pip install commands or ensure requirements.txt is available
+          if [ ! -f requirements.txt ]; then
+            echo "osmium" > requirements.txt
+            echo "shapely" >> requirements.txt
+            echo "rtree" >> requirements.txt
+            echo "psycopg2-binary" >> requirements.txt
+            echo "geopy" >> requirements.txt
+          fi
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # No need to download PBF here, it's not used by process_osm_optimized.py
+      # Restore the cached index and cache files
+      - name: Restore OSM Index and WayData from cache
+        id: restore-osm-index
+        uses: actions/cache@v4
+        with:
+          path: |
+            spatial_index.idx
+            way_data_cache.pkl
+          # Key must exactly match the one used for saving in build_index job
+          key: osm-index-cache-${{ runner.os }}-${{ hashFiles('vietnam-latest.osm.pbf') }}
+          # Add restore-keys if you want to allow for slightly older caches, but exact match is better here.
+
+      - name: Check if index files were restored
+        run: |
+          if [ -f spatial_index.idx ] && [ -f way_data_cache.pkl ]; then
+            echo "Index and cache files successfully restored/found."
+            ls -l spatial_index.idx way_data_cache.pkl
+          else
+            echo "Error: Index or cache files not found after attempting to restore from cache."
+            exit 1
+          fi
+
+      - name: Process chunk ${{ github.event.inputs.part }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          CURRENT_PART=${{ github.event.inputs.part }}
+          if [ "$CURRENT_PART" == "all" ]; then
+            echo "'all' input detected, but this job processes specific parts. Triggering for part 01 if this is the first run."
+            # This job instance will not process if part is 'all'. 
+            # The trigger_next_chunk job will handle starting with '01' if 'all' was the initial input.
+            exit 0 
+          fi
+          INPUT_CSV_BASENAME="vietnam_part_${CURRENT_PART}.csv"
+          # Assuming csv_chunks directory is part of your repository
+          python process_osm_optimized.py \
+            --input-csv "csv_chunks/$INPUT_CSV_BASENAME" \
+            --db-url "$DATABASE_URL" \
+            --index-file spatial_index.idx \
+            --cache-file way_data_cache.pkl
+
+  trigger_next_chunk:
+    needs: [build_index, process_chunk]
+    runs-on: ubuntu-latest
+    # Only run if the previous job (process_chunk) was successful or skipped (e.g. for 'all' input on first process_chunk run)
+    # And build_index was successful
+    if: ${{ always() && needs.build_index.result == 'success' && (needs.process_chunk.result == 'success' || needs.process_chunk.result == 'skipped') }}
+    steps:
+      - name: Trigger next chunk or complete
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const currentPart = "${{ github.event.inputs.part }}";
+            let nextPartNumber;
+
+            if (currentPart === "all") {
+              console.log("Initial 'all' detected, starting with part 01.");
+              nextPartNumber = 1;
+            } else {
+              nextPartNumber = parseInt(currentPart) + 1;
+            }
+
+            if (nextPartNumber <= 63) {
+              const nextPartStr = String(nextPartNumber).padStart(2, '0');
+              console.log(`Triggering next chunk: ${nextPartStr}`);
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: context.workflow.id, // Corrected: use context.workflow.id
+                ref: context.ref,
+                inputs: { part: nextPartStr }
+              });
+            } else {
+              console.log("All chunks processed.");
+            }
+
