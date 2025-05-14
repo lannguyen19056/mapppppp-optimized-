@@ -7,12 +7,11 @@ import os
 import json
 import pickle
 from shapely.geometry import Point, LineString
-from rtree import index # Ensure rtree is installed
+from rtree import index
 import psycopg2
-import psycopg2.extras # For batch inserting
+import psycopg2.extras
 from geopy.distance import geodesic
 
-# --- Target highway types (should be consistent with build_osm_index.py) ---
 TARGET_HIGHWAY_TYPES = {
     'motorway', 'trunk', 'primary', 'secondary', 'tertiary',
     'unclassified', 'residential',
@@ -21,9 +20,8 @@ TARGET_HIGHWAY_TYPES = {
 }
 QUERY_RADIUS_METERS = 50
 
-# Globals for loaded index & cache
 way_data_cache = {}
-spatial_idx = None # Will be loaded from file
+spatial_idx = None
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -31,7 +29,7 @@ def parse_args():
     )
     parser.add_argument(
         "--input-csv", required=True,
-        help="Path to CSV chunk, e.g., csv_chunks/vietnam_part_01.csv"
+        help="Path to CSV chunk, e.g., csv_chunks/vietnam_part_001.csv"
     )
     parser.add_argument(
         "--db-url", required=True,
@@ -51,14 +49,46 @@ def parse_args():
     )
     return parser.parse_args()
 
-def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
-    global spatial_idx, way_data_cache # Ensure these are the loaded ones
+def load_spatial_data(index_file_path, cache_file_path):
+    global spatial_idx, way_data_cache
+    print(f"Attempting to load spatial index from {index_file_path}...", file=sys.stderr)
+    if not os.path.exists(index_file_path):
+        print(f"Error: Spatial index file not found at {index_file_path}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        with open(index_file_path, 'rb') as f_idx:
+            spatial_idx = pickle.load(f_idx)
+        print("Spatial index loaded successfully.", file=sys.stderr)
+    except Exception as e:
+        print(f"Error loading spatial index from {index_file_path}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Attempting to load way data cache from {cache_file_path}...", file=sys.stderr)
+    if not os.path.exists(cache_file_path):
+        print(f"Error: Way data cache file not found at {cache_file_path}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        with open(cache_file_path, 'rb') as f_cache:
+            way_data_cache = pickle.load(f_cache)
+        print("Way data cache loaded successfully.", file=sys.stderr)
+    except Exception as e:
+        print(f"Error loading way data cache from {cache_file_path}: {e}", file=sys.stderr)
+        sys.exit(1)
+    
     if not spatial_idx:
-        print("Error: Spatial index not loaded.", file=sys.stderr)
+        print("Critical Error: spatial_idx is None after attempting to load. Exiting.", file=sys.stderr)
+        sys.exit(1)
+    if not way_data_cache:
+        print("Critical Error: way_data_cache is empty after attempting to load. Exiting.", file=sys.stderr)
+        sys.exit(1)
+
+def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
+    global spatial_idx, way_data_cache
+    if not spatial_idx: # This check should ideally be redundant if load_spatial_data worked
+        print("Error: find_closest_way called but Spatial index not loaded.", file=sys.stderr)
         return None
 
-    r_deg = radius_m / 111000.0 * 1.5 # Original approximation
-
+    r_deg = radius_m / 111000.0 * 1.5
     bbox = (lon - r_deg, lat - r_deg, lon + r_deg, lat + r_deg)
     try:
         candidates = list(spatial_idx.intersection(bbox, objects=True))
@@ -69,7 +99,7 @@ def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
     if not candidates:
         return None
     
-    point_geom = Point(lon, lat) 
+    point_geom = Point(lon, lat)
     best_way_id = None
     min_projected_dist = float('inf')
 
@@ -84,7 +114,7 @@ def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
             continue
         line = LineString(line_coords_lon_lat)
         
-        projected_dist = point_geom.distance(line) 
+        projected_dist = point_geom.distance(line)
 
         if projected_dist < min_projected_dist:
             min_projected_dist = projected_dist
@@ -94,7 +124,6 @@ def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
         return None
 
     result_data = way_data_cache[best_way_id].copy()
-    
     min_geodesic_dist_to_node = float('inf')
     for pt_node_lat_lon in result_data['geometry']:
         d = geodesic((lat, lon), pt_node_lat_lon).meters
@@ -102,13 +131,12 @@ def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
             min_geodesic_dist_to_node = d
             
     result_data['distance_to_input_point_meters'] = min_geodesic_dist_to_node
-    result_data['way_id'] = best_way_id 
+    result_data['way_id'] = best_way_id
     
     if result_data['distance_to_input_point_meters'] > radius_m:
         return None
         
     return result_data
-
 
 if __name__ == '__main__':
     args = parse_args()
@@ -118,22 +146,16 @@ if __name__ == '__main__':
     CACHE_FILE_PATH = args.cache_file
     COMMIT_INTERVAL = args.commit_interval
 
-    print(f"Loading spatial index from {INDEX_FILE_PATH}...", file=sys.stderr)
-    with open(INDEX_FILE_PATH, 'rb') as f_idx:
-        spatial_idx = pickle.load(f_idx)
-    print("Spatial index loaded.", file=sys.stderr)
-
-    print(f"Loading way data cache from {CACHE_FILE_PATH}...", file=sys.stderr)
-    with open(CACHE_FILE_PATH, 'rb') as f_cache:
-        way_data_cache = pickle.load(f_cache)
-    print("Way data cache loaded.", file=sys.stderr)
+    load_spatial_data(INDEX_FILE_PATH, CACHE_FILE_PATH)
 
     print(f"Processing CSV: {CSV_INPUT_PATH}", file=sys.stderr)
     conn = None
-    cur = None # Initialize cur to None before the try block
+    cur = None
     try:
+        print(f"Connecting to database with URL: {DATABASE_URL[:DATABASE_URL.find('@') + 1]}... (credentials redacted)", file=sys.stderr)
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
+        print("Database connection successful.", file=sys.stderr)
         
         insert_sql_template = """
         INSERT INTO road_segment_results (
@@ -147,15 +169,20 @@ if __name__ == '__main__':
         records_batch = []
         processed_rows_count = 0
         committed_rows_total = 0
+        found_ways_count = 0
 
         with open(CSV_INPUT_PATH, newline='', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
+            reader = csv.reader(f) # Changed from DictReader
             for i, row in enumerate(reader, start=1):
                 processed_rows_count = i
+                if len(row) < 2:
+                    print(f"Skipping row {i} due to insufficient columns: {row}", file=sys.stderr)
+                    continue
                 try:
-                    lat, lon = float(row['latitude']), float(row['longitude'])
+                    # Assuming column 0 is latitude, column 1 is longitude
+                    lat, lon = float(row[0]), float(row[1]) 
                 except (ValueError, TypeError):
-                    print(f"Skipping row {i} due to invalid lat/lon: {row.get('latitude')}, {row.get('longitude')}", file=sys.stderr)
+                    print(f"Skipping row {i} due to invalid lat/lon: {row[0]}, {row[1]}", file=sys.stderr)
                     continue
                 
                 found_way_data = find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS)
@@ -163,9 +190,11 @@ if __name__ == '__main__':
                 if not found_way_data:
                     continue
                 
+                found_ways_count += 1
                 geom_json = json.dumps(found_way_data['geometry'])
+                # Using row number 'i' as source_identifier since there are no headers
                 record_tuple = (
-                    lat, lon, row.get('source_identifier', i), 
+                    lat, lon, str(i), 
                     found_way_data['way_id'], 
                     geom_json, 
                     found_way_data.get('name'), 
@@ -190,16 +219,16 @@ if __name__ == '__main__':
                     psycopg2.extras.execute_values(cur, insert_sql_template, records_batch, page_size=len(records_batch))
                     conn.commit()
                     committed_rows_total += len(records_batch)
-                    print(f"Committed {committed_rows_total} rows (batch of {len(records_batch)})", file=sys.stderr)
+                    print(f"Committed {committed_rows_total} rows (batch of {len(records_batch)}). Found ways so far: {found_ways_count}", file=sys.stderr)
                     records_batch = []
 
-            if records_batch: # Commit any remaining records
+            if records_batch:
                 psycopg2.extras.execute_values(cur, insert_sql_template, records_batch, page_size=len(records_batch))
                 conn.commit()
                 committed_rows_total += len(records_batch)
-                print(f"Committed final {len(records_batch)} rows. Total committed: {committed_rows_total}", file=sys.stderr)
+                print(f"Committed final {len(records_batch)} rows. Total committed: {committed_rows_total}. Total found ways: {found_ways_count}", file=sys.stderr)
         
-        print(f"Done processing chunk {CSV_INPUT_PATH}. Processed {processed_rows_count} CSV rows.", file=sys.stderr)
+        print(f"Done processing chunk {CSV_INPUT_PATH}. Processed {processed_rows_count} CSV rows. Matched {found_ways_count} ways.", file=sys.stderr)
 
     except psycopg2.Error as e:
         print(f"Database error: {e}", file=sys.stderr)
@@ -212,7 +241,7 @@ if __name__ == '__main__':
         import traceback
         traceback.print_exc()
     finally:
-        if cur: # Check if cur was defined (i.e., connection was successful enough to create a cursor)
+        if cur:
             cur.close()
         if conn:
             conn.close()
