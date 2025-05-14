@@ -6,7 +6,7 @@ on:
       part:
         description: 'Chunk number to process (001–063). Set to "all" to run build_index then all parts sequentially, or specific part number.'
         required: true
-        default: '001' # Changed to three digits
+        default: '001'
 
 jobs:
   build_index:
@@ -27,7 +27,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles(\'**/requirements.txt\') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
@@ -46,12 +46,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vietnam-latest.osm.pbf
-          key: osm-pbf-${{ runner.os }}-v1-${{ hashFiles(\'vietnam-latest.osm.pbf\') }}
+          key: osm-pbf-${{ runner.os }}-v1-${{ hashFiles('vietnam-latest.osm.pbf') }}
           restore-keys: |
             osm-pbf-${{ runner.os }}-v1-
 
       - name: Download PBF if missing
-        if: steps.cache-pbf.outputs.cache-hit != \'true\'
+        if: steps.cache-pbf.outputs.cache-hit != 'true'
         run: |
           echo "Downloading PBF file..."
           curl -SL -o vietnam-latest.osm.pbf https://download.geofabrik.de/asia/vietnam-latest.osm.pbf
@@ -63,11 +63,10 @@ jobs:
           path: |
             spatial_index.idx
             way_data_cache.pkl
-          key: osm-index-cache-${{ runner.os }}-${{ hashFiles(\'vietnam-latest.osm.pbf\') }}
+          key: osm-index-cache-${{ runner.os }}-${{ hashFiles('vietnam-latest.osm.pbf') }}
 
       - name: Build OSM Index (if not cached)
-        # Use build_osm_index_v3.py as it's the latest optimized version
-        if: steps.cache-osm-index.outputs.cache-hit != \'true\'
+        if: steps.cache-osm-index.outputs.cache-hit != 'true'
         run: |
           echo "Building OSM Index and Cache..."
           python build_osm_index_v3.py \
@@ -75,12 +74,12 @@ jobs:
             --output-index spatial_index.idx \
             --output-cache way_data_cache.pkl
       - name: Verify index files created
-        if: steps.cache-osm-index.outputs.cache-hit != \'true\'
+        if: steps.cache-osm-index.outputs.cache-hit != 'true'
         run: |
           ls -l spatial_index.idx way_data_cache.pkl
           echo "Index and cache files built."
       - name: Index files found in cache
-        if: steps.cache-osm-index.outputs.cache-hit == \'true\'
+        if: steps.cache-osm-index.outputs.cache-hit == 'true'
         run: |
           echo "Index and cache files restored from cache."
           ls -l spatial_index.idx way_data_cache.pkl
@@ -88,7 +87,6 @@ jobs:
   process_chunk:
     needs: build_index
     runs-on: ubuntu-latest
-    # Use the service container for PostgreSQL as previously discussed
     services:
       postgres:
         image: postgres:13
@@ -103,7 +101,7 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    if: ${{ needs.build_index.result == \'success\' && (github.event.inputs.part != \'all\' || needs.build_index.outputs.index_cache_hit == \'true\' || needs.build_index.outputs.index_cache_hit != \'true\' ) }}
+    if: ${{ needs.build_index.result == 'success' && (github.event.inputs.part != 'all' || needs.build_index.outputs.index_cache_hit == 'true' || needs.build_index.outputs.index_cache_hit != 'true' ) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -111,13 +109,13 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: \'3.10\'
+          python-version: '3.10'
 
       - name: Cache pip dependencies
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles(\'**/requirements.txt\') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
@@ -139,7 +137,7 @@ jobs:
           path: |
             spatial_index.idx
             way_data_cache.pkl
-          key: osm-index-cache-${{ runner.os }}-${{ hashFiles(\'vietnam-latest.osm.pbf\') }}
+          key: osm-index-cache-${{ runner.os }}-${{ hashFiles('vietnam-latest.osm.pbf') }}
 
       - name: Check if index files were restored
         run: |
@@ -153,18 +151,15 @@ jobs:
 
       - name: Process chunk ${{ github.event.inputs.part }}
         env:
-          # Ensure DATABASE_URL uses the service container details
           DATABASE_URL: "postgresql://runner:runnerpassword@localhost:5432/gisdb" # Use secrets for password
         run: |
           CURRENT_PART=${{ github.event.inputs.part }}
           if [ "$CURRENT_PART" == "all" ]; then
-            echo "\'all\' input detected, this job processes specific parts. Triggering for part 001."
+            echo "'all' input detected, this job processes specific parts. Triggering for part 001."
             exit 0 
           fi
-          # CURRENT_PART should already be correctly formatted (e.g., 001) from the input or trigger_next_chunk
           INPUT_CSV_BASENAME="vietnam_part_${CURRENT_PART}.csv"
           echo "Looking for CSV file: csv_chunks/$INPUT_CSV_BASENAME"
-          # Use process_osm_optimized_v2.py as it has the cursor fix
           python process_osm_optimized_v2.py \
             --input-csv "csv_chunks/$INPUT_CSV_BASENAME" \
             --db-url "$DATABASE_URL" \
@@ -174,7 +169,7 @@ jobs:
   trigger_next_chunk:
     needs: [build_index, process_chunk]
     runs-on: ubuntu-latest
-    if: ${{ always() && needs.build_index.result == \'success\' && (needs.process_chunk.result == \'success\' || needs.process_chunk.result == \'skipped\') }}
+    if: ${{ always() && needs.build_index.result == 'success' && (needs.process_chunk.result == 'success' || needs.process_chunk.result == 'skipped') }}
     steps:
       - name: Trigger next chunk or complete
         uses: actions/github-script@v7
@@ -185,15 +180,14 @@ jobs:
             let nextPartNumber;
 
             if (currentPart === "all") {
-              console.log("Initial \'all\' detected, starting with part 001.");
+              console.log("Initial 'all' detected, starting with part 001.");
               nextPartNumber = 1;
             } else {
               nextPartNumber = parseInt(currentPart) + 1;
             }
 
-            // Assuming max part number is 63 for this example
             if (nextPartNumber <= 63) { 
-              const nextPartStr = String(nextPartNumber).padStart(3, '0'); // Changed to 3 digits
+              const nextPartStr = String(nextPartNumber).padStart(3, '0');
               console.log(`Triggering next chunk: ${nextPartStr}`);
               await github.rest.actions.createWorkflowDispatch({
                 owner: context.repo.owner,
