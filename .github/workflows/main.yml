@@ -69,7 +69,7 @@ jobs:
         if: steps.cache-osm-index.outputs.cache-hit != 'true'
         run: |
           echo "Building OSM Index and Cache..."
-          python build_osm_index_v3.py \
+          python build_osm_index.py \
             --osm-pbf vietnam-latest.osm.pbf \
             --output-index spatial_index.idx \
             --output-cache way_data_cache.pkl
