@@ -51,41 +51,60 @@ def parse_args():
 
 def load_spatial_data(index_file_path, cache_file_path):
     global spatial_idx, way_data_cache
-    print(f"Attempting to load spatial index from {index_file_path}...", file=sys.stderr)
+    print(f"DEBUG: Attempting to load spatial index from {index_file_path}...", file=sys.stderr)
     if not os.path.exists(index_file_path):
-        print(f"Error: Spatial index file not found at {index_file_path}", file=sys.stderr)
+        print(f"DEBUG: Error - Spatial index file not found at {index_file_path}", file=sys.stderr)
         sys.exit(1)
     try:
         with open(index_file_path, 'rb') as f_idx:
-            spatial_idx = pickle.load(f_idx)
-        print("Spatial index loaded successfully.", file=sys.stderr)
+            loaded_object = pickle.load(f_idx)
+        print(f"DEBUG: Spatial index file loaded. Object type: {type(loaded_object)}", file=sys.stderr)
+        # print(f"DEBUG: Loaded object value (partial): {str(loaded_object)[:200]}", file=sys.stderr) # Be careful with large objects
+        if hasattr(loaded_object, 'bounds'):
+             print(f"DEBUG: Loaded object has 'bounds' attribute: {loaded_object.bounds}", file=sys.stderr)
+        if hasattr(loaded_object, 'count'):
+             print(f"DEBUG: Loaded object has 'count' attribute, item count: {loaded_object.count(loaded_object.bounds)}", file=sys.stderr)
+        
+        spatial_idx = loaded_object # Assign to global variable
+        print("DEBUG: spatial_idx assigned globally.", file=sys.stderr)
+
     except Exception as e:
-        print(f"Error loading spatial index from {index_file_path}: {e}", file=sys.stderr)
+        print(f"DEBUG: Error loading spatial index from {index_file_path}: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         sys.exit(1)
 
-    print(f"Attempting to load way data cache from {cache_file_path}...", file=sys.stderr)
+    print(f"DEBUG: Attempting to load way data cache from {cache_file_path}...", file=sys.stderr)
     if not os.path.exists(cache_file_path):
-        print(f"Error: Way data cache file not found at {cache_file_path}", file=sys.stderr)
+        print(f"DEBUG: Error - Way data cache file not found at {cache_file_path}", file=sys.stderr)
         sys.exit(1)
     try:
         with open(cache_file_path, 'rb') as f_cache:
             way_data_cache = pickle.load(f_cache)
-        print("Way data cache loaded successfully.", file=sys.stderr)
+        print(f"DEBUG: Way data cache loaded. Type: {type(way_data_cache)}. Length: {len(way_data_cache) if isinstance(way_data_cache, dict) else 'N/A'}", file=sys.stderr)
     except Exception as e:
-        print(f"Error loading way data cache from {cache_file_path}: {e}", file=sys.stderr)
+        print(f"DEBUG: Error loading way data cache from {cache_file_path}: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         sys.exit(1)
     
-    if not spatial_idx:
-        print("Critical Error: spatial_idx is None after attempting to load. Exiting.", file=sys.stderr)
+    # Explicit check after assignment
+    if spatial_idx is None:
+        print("DEBUG: Critical Error - global spatial_idx is None after assignment and checks. Exiting.", file=sys.stderr)
         sys.exit(1)
+    else:
+        print(f"DEBUG: Global spatial_idx is NOT None. Type: {type(spatial_idx)}", file=sys.stderr)
+
     if not way_data_cache:
-        print("Critical Error: way_data_cache is empty after attempting to load. Exiting.", file=sys.stderr)
+        print("DEBUG: Critical Error - way_data_cache is empty after attempting to load. Exiting.", file=sys.stderr)
         sys.exit(1)
+    else:
+        print(f"DEBUG: Global way_data_cache is not empty. Length: {len(way_data_cache)}", file=sys.stderr)
 
 def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
     global spatial_idx, way_data_cache
-    if not spatial_idx: # This check should ideally be redundant if load_spatial_data worked
-        print("Error: find_closest_way called but Spatial index not loaded.", file=sys.stderr)
+    if spatial_idx is None: 
+        print("DEBUG: Error in find_closest_way - global spatial_idx is None.", file=sys.stderr)
         return None
 
     r_deg = radius_m / 111000.0 * 1.5
@@ -93,7 +112,7 @@ def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
     try:
         candidates = list(spatial_idx.intersection(bbox, objects=True))
     except Exception as e:
-        print(f"Error during spatial index intersection: {e}", file=sys.stderr)
+        print(f"DEBUG: Error during spatial index intersection: {e}", file=sys.stderr)
         return None
         
     if not candidates:
@@ -172,14 +191,13 @@ if __name__ == '__main__':
         found_ways_count = 0
 
         with open(CSV_INPUT_PATH, newline='', encoding='utf-8') as f:
-            reader = csv.reader(f) # Changed from DictReader
+            reader = csv.reader(f)
             for i, row in enumerate(reader, start=1):
                 processed_rows_count = i
                 if len(row) < 2:
                     print(f"Skipping row {i} due to insufficient columns: {row}", file=sys.stderr)
                     continue
                 try:
-                    # Assuming column 0 is latitude, column 1 is longitude
                     lat, lon = float(row[0]), float(row[1]) 
                 except (ValueError, TypeError):
                     print(f"Skipping row {i} due to invalid lat/lon: {row[0]}, {row[1]}", file=sys.stderr)
@@ -192,7 +210,6 @@ if __name__ == '__main__':
                 
                 found_ways_count += 1
                 geom_json = json.dumps(found_way_data['geometry'])
-                # Using row number 'i' as source_identifier since there are no headers
                 record_tuple = (
                     lat, lon, str(i), 
                     found_way_data['way_id'], 
@@ -239,7 +256,7 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"An unexpected error occurred: {e}", file=sys.stderr)
         import traceback
-        traceback.print_exc()
+        traceback.print_exc(file=sys.stderr)
     finally:
         if cur:
             cur.close()
