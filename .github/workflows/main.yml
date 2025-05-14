@@ -63,7 +63,6 @@ jobs:
           path: |
             spatial_index.idx
             way_data_cache.pkl
-          # Added -force-rebuild-1 to the key to ensure cache miss for this run
           key: osm-index-cache-${{ runner.os }}-${{ hashFiles('vietnam-latest.osm.pbf') }}-force-rebuild-1 
 
       - name: Build OSM Index (if not cached)
@@ -118,6 +117,32 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      # Added steps to ensure PBF file is present before restoring index cache
+      - name: Cache Vietnam OSM PBF (for process_chunk job)
+        id: cache-pbf-process
+        uses: actions/cache@v4
+        with:
+          path: vietnam-latest.osm.pbf
+          key: osm-pbf-${{ runner.os }}-v1-${{ hashFiles('vietnam-latest.osm.pbf') }}
+          restore-keys: |
+            osm-pbf-${{ runner.os }}-v1-
+
+      - name: Download PBF if missing (for process_chunk job)
+        if: steps.cache-pbf-process.outputs.cache-hit != 'true'
+        run: |
+          echo "Downloading PBF file for process_chunk job..."
+          # This should ideally not happen if build_index ran and downloaded/cached it
+          # But as a fallback or if PBF cache key changes for some reason.
+          curl -SL -o vietnam-latest.osm.pbf https://download.geofabrik.de/asia/vietnam-latest.osm.pbf
+      
+      - name: Verify PBF file exists for process_chunk
+        run: |
+          if [ ! -f vietnam-latest.osm.pbf ]; then
+            echo "Critical Error: vietnam-latest.osm.pbf not found in process_chunk job. Cannot calculate correct cache key for index."
+            exit 1
+          fi
+          echo "PBF file found in process_chunk job."
+
       - name: Restore OSM Index and WayData from cache (with cache buster)
         id: restore-osm-index
         uses: actions/cache@v4
@@ -125,7 +150,6 @@ jobs:
           path: |
             spatial_index.idx
             way_data_cache.pkl
-          # Ensure this key matches the one in build_index job for consistency
           key: osm-index-cache-${{ runner.os }}-${{ hashFiles('vietnam-latest.osm.pbf') }}-force-rebuild-1
 
       - name: Check if index files were restored
@@ -134,10 +158,8 @@ jobs:
             echo "Index and cache files successfully restored/found."
             ls -l spatial_index.idx way_data_cache.pkl
           else
-            echo "Error: Index or cache files not found after attempting to restore from cache. This is expected if build_index just ran due to cache miss."
-            # This should not cause an exit 1 if the build_index job is supposed to create them.
-            # However, if build_index was skipped and files are not here, it's an issue.
-            # For now, let's assume build_index will provide them if cache miss.
+            echo "Error: Index or cache files not found after attempting to restore from cache. Ensure build_index job ran and cached them correctly with the matching key."
+            exit 1 # If index files are not here, processing cannot continue
           fi
 
       - name: Process chunk ${{ github.event.inputs.part }}
@@ -148,11 +170,6 @@ jobs:
           if [ "$CURRENT_PART" == "all" ]; then
             echo "'all' input detected, this job processes specific parts. Triggering for part 001."
             exit 0 
-          fi
-          # Ensure index files exist before processing
-          if [ ! -f spatial_index.idx ] || [ ! -f way_data_cache.pkl ]; then
-            echo "Critical Error: spatial_index.idx or way_data_cache.pkl not found before processing chunk. Build_index might have failed or cache was not effective."
-            exit 1
           fi
           INPUT_CSV_BASENAME="vietnam_part_${CURRENT_PART}.csv"
           echo "Looking for CSV file: csv_chunks/$INPUT_CSV_BASENAME"
