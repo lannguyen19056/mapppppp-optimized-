@@ -87,7 +87,6 @@ jobs:
   process_chunk:
     needs: build_index
     runs-on: ubuntu-latest
-    # Removed the 'services' block for PostgreSQL as Neon.tech is used
     if: ${{ needs.build_index.result == 'success' && (github.event.inputs.part != 'all' || needs.build_index.outputs.index_cache_hit == 'true' || needs.build_index.outputs.index_cache_hit != 'true' ) }}
     steps:
       - name: Checkout code
@@ -139,7 +138,6 @@ jobs:
 
       - name: Process chunk ${{ github.event.inputs.part }}
         env:
-          # Ensure DATABASE_URL is set from GitHub Secrets for Neon.tech
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           CURRENT_PART=${{ github.event.inputs.part }}
@@ -149,6 +147,7 @@ jobs:
           fi
           INPUT_CSV_BASENAME="vietnam_part_${CURRENT_PART}.csv"
           echo "Looking for CSV file: csv_chunks/$INPUT_CSV_BASENAME"
+          # Use the new script with added debugging for spatial_idx loading
           python process_osm_optimized.py \
             --input-csv "csv_chunks/$INPUT_CSV_BASENAME" \
             --db-url "$DATABASE_URL" \
