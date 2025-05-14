@@ -87,20 +87,7 @@ jobs:
   process_chunk:
     needs: build_index
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:13
-        env:
-          POSTGRES_USER: runner
-          POSTGRES_PASSWORD: ${{ secrets.DB_PASSWORD }} # Use a secret for the password
-          POSTGRES_DB: gisdb
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+    # Removed the 'services' block for PostgreSQL as Neon.tech is used
     if: ${{ needs.build_index.result == 'success' && (github.event.inputs.part != 'all' || needs.build_index.outputs.index_cache_hit == 'true' || needs.build_index.outputs.index_cache_hit != 'true' ) }}
     steps:
       - name: Checkout code
@@ -132,7 +119,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Restore OSM Index and WayData from cache
-        id: restore-osm-index # Added id for clarity
+        id: restore-osm-index
         uses: actions/cache@v4
         with:
           path: |
@@ -152,7 +139,7 @@ jobs:
 
       - name: Process chunk ${{ github.event.inputs.part }}
         env:
-          # Construct DATABASE_URL using secrets for password
+          # Ensure DATABASE_URL is set from GitHub Secrets for Neon.tech
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           CURRENT_PART=${{ github.event.inputs.part }}
@@ -162,7 +149,6 @@ jobs:
           fi
           INPUT_CSV_BASENAME="vietnam_part_${CURRENT_PART}.csv"
           echo "Looking for CSV file: csv_chunks/$INPUT_CSV_BASENAME"
-          # Use the latest script version for processing CSVs
           python process_osm_optimized.py \
             --input-csv "csv_chunks/$INPUT_CSV_BASENAME" \
             --db-url "$DATABASE_URL" \
@@ -195,7 +181,7 @@ jobs:
               await github.rest.actions.createWorkflowDispatch({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                workflow_id: context.workflow, // Use workflow file name (e.g., main.yml)
+                workflow_id: context.workflow,
                 ref: context.ref,
                 inputs: { part: nextPartStr }
               });
