@@ -160,7 +160,7 @@ jobs:
           fi
           INPUT_CSV_BASENAME="vietnam_part_${CURRENT_PART}.csv"
           echo "Looking for CSV file: csv_chunks/$INPUT_CSV_BASENAME"
-          python process_osm_optimized_v2.py \
+          python process_osm_optimized.py \
             --input-csv "csv_chunks/$INPUT_CSV_BASENAME" \
             --db-url "$DATABASE_URL" \
             --index-file spatial_index.idx \
