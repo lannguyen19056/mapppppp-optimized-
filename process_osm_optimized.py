@@ -29,10 +29,6 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Process one CSV chunk against pre-built OSM index/cache"
     )
-    # parser.add_argument(
-    #     "--osm-pbf", required=True, # No longer needed directly by this script if index is pre-built
-    #     help="Path to vietnam-latest.osm.pbf"
-    # )
     parser.add_argument(
         "--input-csv", required=True,
         help="Path to CSV chunk, e.g., csv_chunks/vietnam_part_01.csv"
@@ -55,28 +51,12 @@ def parse_args():
     )
     return parser.parse_args()
 
-# calculate_segment_length is not directly used in this script anymore as length is in cache
-# but find_closest_way might use it if it were to re-calculate, however, it's pre-calculated.
-
-# IndexBuilderHandler is removed as index is pre-built.
-
 def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
     global spatial_idx, way_data_cache # Ensure these are the loaded ones
     if not spatial_idx:
         print("Error: Spatial index not loaded.", file=sys.stderr)
         return None
 
-    # Rtree bbox is (minx, miny, maxx, maxy) which is (min_lon, min_lat, max_lon, max_lat)
-    # Approximate degrees for radius. 1 degree lat ~ 111km. 1 degree lon varies.
-    # Using a slightly larger box for safety, original r_deg was radius_m/111000 * 1.5
-    # This approximation is okay for small radii.
-    r_deg_lat = radius_m / 111000.0
-    r_deg_lon = radius_m / (111000.0 * abs(Point(0, lat).x)) # cos(lat) term, Point(0,lat).x is lat
-    # A simpler, more generous fixed conversion factor was used in the original, let's stick to that for consistency if it worked.
-    # The original used: r_deg = radius_m/111000 * 1.5. This is ~1.5x radius in degrees latitude.
-    # For longitude, this is only accurate near the equator. Let's use a more robust calculation or ensure the original was sufficient.
-    # Given the small radius (50m), the original approximation might be fine.
-    # Let's use the original approximation for now to maintain consistency with how index was built.
     r_deg = radius_m / 111000.0 * 1.5 # Original approximation
 
     bbox = (lon - r_deg, lat - r_deg, lon + r_deg, lat + r_deg)
@@ -89,7 +69,7 @@ def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
     if not candidates:
         return None
     
-    point_geom = Point(lon, lat) # Shapely Point for distance calculation (lon, lat)
+    point_geom = Point(lon, lat) 
     best_way_id = None
     min_projected_dist = float('inf')
 
@@ -99,21 +79,12 @@ def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
         if not data or 'geometry' not in data:
             continue
         
-        # Geometry in cache is [(lat, lon), ...]
-        # Shapely LineString expects [(x, y), ...] which is [(lon, lat), ...]
         line_coords_lon_lat = [(pt[1], pt[0]) for pt in data['geometry']]
         if len(line_coords_lon_lat) < 2:
             continue
         line = LineString(line_coords_lon_lat)
         
-        projected_dist = point_geom.distance(line) # This distance is in degrees if coords are degrees
-                                                # To make it comparable, it's better to use geodesic distances
-                                                # or ensure the projection distortion is acceptable for small distances.
-                                                # The original script used this, so we'll keep it for now.
-                                                # However, this distance is in the units of the coordinates of the LineString and Point.
-                                                # If they are in lat/lon degrees, this is not a metric distance.
-                                                # For small areas, Euclidean distance on lon/lat can be a proxy but is not accurate.
-                                                # Let's assume this was deemed acceptable for relative comparison.
+        projected_dist = point_geom.distance(line) 
 
         if projected_dist < min_projected_dist:
             min_projected_dist = projected_dist
@@ -122,10 +93,8 @@ def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
     if best_way_id is None:
         return None
 
-    result_data = way_data_cache[best_way_id].copy() # Important to copy if modifying
+    result_data = way_data_cache[best_way_id].copy()
     
-    # Calculate geodesic distance to the closest node of the best_way_id
-    # Input point is (lat, lon)
     min_geodesic_dist_to_node = float('inf')
     for pt_node_lat_lon in result_data['geometry']:
         d = geodesic((lat, lon), pt_node_lat_lon).meters
@@ -133,9 +102,8 @@ def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
             min_geodesic_dist_to_node = d
             
     result_data['distance_to_input_point_meters'] = min_geodesic_dist_to_node
-    result_data['way_id'] = best_way_id # Ensure way_id is part of the returned dict
+    result_data['way_id'] = best_way_id 
     
-    # Filter out if the closest node is beyond the query radius, even if projection was closer
     if result_data['distance_to_input_point_meters'] > radius_m:
         return None
         
@@ -162,12 +130,11 @@ if __name__ == '__main__':
 
     print(f"Processing CSV: {CSV_INPUT_PATH}", file=sys.stderr)
     conn = None
+    cur = None # Initialize cur to None before the try block
     try:
         conn = psycopg2.connect(DATABASE_URL)
-        # conn.autocommit = False # Set by default, explicit commit needed
         cur = conn.cursor()
         
-        # Note: For execute_values, the SQL should have ONE %s for the list of tuples.
         insert_sql_template = """
         INSERT INTO road_segment_results (
           input_latitude,input_longitude,input_source_identifier,
@@ -176,9 +143,6 @@ if __name__ == '__main__':
           distance_to_input_point_meters,query_radius_used,segment_length_meters
         ) VALUES %s;
         """
-        # The page_size for execute_values is how many records are in each VALUES (...) clause, 
-        # not how many records before an INSERT statement is sent.
-        # We will collect COMMIT_INTERVAL records and then call execute_values once for that batch.
 
         records_batch = []
         processed_rows_count = 0
@@ -201,7 +165,7 @@ if __name__ == '__main__':
                 
                 geom_json = json.dumps(found_way_data['geometry'])
                 record_tuple = (
-                    lat, lon, row.get('source_identifier', i), # Use source_identifier if present, else row number
+                    lat, lon, row.get('source_identifier', i), 
                     found_way_data['way_id'], 
                     geom_json, 
                     found_way_data.get('name'), 
@@ -229,8 +193,7 @@ if __name__ == '__main__':
                     print(f"Committed {committed_rows_total} rows (batch of {len(records_batch)})", file=sys.stderr)
                     records_batch = []
 
-            # Commit any remaining records in the last batch
-            if records_batch:
+            if records_batch: # Commit any remaining records
                 psycopg2.extras.execute_values(cur, insert_sql_template, records_batch, page_size=len(records_batch))
                 conn.commit()
                 committed_rows_total += len(records_batch)
@@ -241,7 +204,7 @@ if __name__ == '__main__':
     except psycopg2.Error as e:
         print(f"Database error: {e}", file=sys.stderr)
         if conn:
-            conn.rollback() # Rollback on error
+            conn.rollback()
     except FileNotFoundError as e:
         print(f"File not found error: {e}", file=sys.stderr)
     except Exception as e:
@@ -249,7 +212,7 @@ if __name__ == '__main__':
         import traceback
         traceback.print_exc()
     finally:
-        if cur:
+        if cur: # Check if cur was defined (i.e., connection was successful enough to create a cursor)
             cur.close()
         if conn:
             conn.close()
