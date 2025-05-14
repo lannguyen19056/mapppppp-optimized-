@@ -56,20 +56,21 @@ jobs:
           echo "Downloading PBF file..."
           curl -SL -o vietnam-latest.osm.pbf https://download.geofabrik.de/asia/vietnam-latest.osm.pbf
 
-      - name: Cache OSM Index and WayData
+      - name: Cache OSM Index and WayData (with cache buster)
         id: cache-osm-index
         uses: actions/cache@v4
         with:
           path: |
             spatial_index.idx
             way_data_cache.pkl
-          key: osm-index-cache-${{ runner.os }}-${{ hashFiles('vietnam-latest.osm.pbf') }}
+          # Added -force-rebuild-1 to the key to ensure cache miss for this run
+          key: osm-index-cache-${{ runner.os }}-${{ hashFiles('vietnam-latest.osm.pbf') }}-force-rebuild-1 
 
       - name: Build OSM Index (if not cached)
         if: steps.cache-osm-index.outputs.cache-hit != 'true'
         run: |
-          echo "Building OSM Index and Cache..."
-          python build_osm_index.py \
+          echo "Building OSM Index and Cache (cache miss forced or new PBF)..."
+          python build_osm_index_v4.py \
             --osm-pbf vietnam-latest.osm.pbf \
             --output-index spatial_index.idx \
             --output-cache way_data_cache.pkl
@@ -81,7 +82,7 @@ jobs:
       - name: Index files found in cache
         if: steps.cache-osm-index.outputs.cache-hit == 'true'
         run: |
-          echo "Index and cache files restored from cache."
+          echo "Index and cache files restored from cache (this should not happen with cache buster if PBF is same)."
           ls -l spatial_index.idx way_data_cache.pkl
 
   process_chunk:
@@ -117,14 +118,15 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Restore OSM Index and WayData from cache
+      - name: Restore OSM Index and WayData from cache (with cache buster)
         id: restore-osm-index
         uses: actions/cache@v4
         with:
           path: |
             spatial_index.idx
             way_data_cache.pkl
-          key: osm-index-cache-${{ runner.os }}-${{ hashFiles('vietnam-latest.osm.pbf') }}
+          # Ensure this key matches the one in build_index job for consistency
+          key: osm-index-cache-${{ runner.os }}-${{ hashFiles('vietnam-latest.osm.pbf') }}-force-rebuild-1
 
       - name: Check if index files were restored
         run: |
@@ -132,8 +134,10 @@ jobs:
             echo "Index and cache files successfully restored/found."
             ls -l spatial_index.idx way_data_cache.pkl
           else
-            echo "Error: Index or cache files not found after attempting to restore from cache. Ensure build_index job ran and cached them correctly."
-            exit 1
+            echo "Error: Index or cache files not found after attempting to restore from cache. This is expected if build_index just ran due to cache miss."
+            # This should not cause an exit 1 if the build_index job is supposed to create them.
+            # However, if build_index was skipped and files are not here, it's an issue.
+            # For now, let's assume build_index will provide them if cache miss.
           fi
 
       - name: Process chunk ${{ github.event.inputs.part }}
@@ -145,10 +149,14 @@ jobs:
             echo "'all' input detected, this job processes specific parts. Triggering for part 001."
             exit 0 
           fi
+          # Ensure index files exist before processing
+          if [ ! -f spatial_index.idx ] || [ ! -f way_data_cache.pkl ]; then
+            echo "Critical Error: spatial_index.idx or way_data_cache.pkl not found before processing chunk. Build_index might have failed or cache was not effective."
+            exit 1
+          fi
           INPUT_CSV_BASENAME="vietnam_part_${CURRENT_PART}.csv"
           echo "Looking for CSV file: csv_chunks/$INPUT_CSV_BASENAME"
-          # Use the new script with added debugging for spatial_idx loading
-          python process_osm_optimized.py \
+          python process_osm_optimized_v5.py \
             --input-csv "csv_chunks/$INPUT_CSV_BASENAME" \
             --db-url "$DATABASE_URL" \
             --index-file spatial_index.idx \
