@@ -23,6 +23,19 @@ QUERY_RADIUS_METERS = 50
 way_data_cache = {}
 spatial_idx = None
 
+def osm_tag_to_boolean(value):
+    """Converts common OSM tag string values to Python Booleans or None."""
+    if value is None:
+        return None
+    val_lower = str(value).lower()
+    if val_lower in ['yes', 'true', '1', '-1']:
+        return True
+    if val_lower in ['no', 'false', '0']:
+        return False
+    # For any other non-recognized string, return None (SQL NULL)
+    # or you could raise an error if strict parsing is needed.
+    return None
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Process one CSV chunk against pre-built OSM index/cache"
@@ -57,13 +70,11 @@ def load_spatial_data(index_file_path, cache_file_path):
     if index_basename.endswith(".idx"):
         index_basename = index_basename[:-4]
     
-    # Check if the actual Rtree files exist (.idx and .dat)
     if not os.path.exists(index_basename + ".idx") or not os.path.exists(index_basename + ".dat"):
         print(f"DEBUG: Error - Spatial index files (.idx or .dat) not found for base {index_basename}", file=sys.stderr)
         sys.exit(1)
         
     try:
-        # Load the RTree index using its file-based mechanism
         spatial_idx = index.Index(index_basename)
         print(f"DEBUG: Spatial index loaded using Rtree. Type: {type(spatial_idx)}", file=sys.stderr)
         if hasattr(spatial_idx, 'bounds'):
@@ -215,6 +226,13 @@ if __name__ == '__main__':
                 
                 found_ways_count += 1
                 geom_json = json.dumps(found_way_data['geometry'])
+                
+                # Convert boolean-like fields
+                oneway_bool = osm_tag_to_boolean(found_way_data.get('oneway'))
+                lit_bool = osm_tag_to_boolean(found_way_data.get('lit'))
+                bridge_bool = osm_tag_to_boolean(found_way_data.get('bridge'))
+                tunnel_bool = osm_tag_to_boolean(found_way_data.get('tunnel'))
+                
                 record_tuple = (
                     lat, lon, str(i), 
                     found_way_data['way_id'], 
@@ -223,12 +241,12 @@ if __name__ == '__main__':
                     found_way_data.get('highway'),
                     found_way_data.get('maxspeed'), 
                     found_way_data.get('lanes'), 
-                    found_way_data.get('oneway'), 
+                    oneway_bool, # Use converted value
                     found_way_data.get('surface'),
                     found_way_data.get('ref'), 
-                    found_way_data.get('lit'), 
-                    found_way_data.get('bridge'), 
-                    found_way_data.get('tunnel'),
+                    lit_bool,    # Use converted value
+                    bridge_bool, # Use converted value
+                    tunnel_bool, # Use converted value
                     found_way_data.get('access'), 
                     found_way_data.get('service'), 
                     found_way_data['distance_to_input_point_meters'],
