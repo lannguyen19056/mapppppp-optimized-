@@ -4,9 +4,9 @@ import sys
 import csv
 import time
 import os
-import json
+import json # Not strictly needed for geometry WKT, but kept for now
 import pickle # Still needed for way_data_cache
-from shapely.geometry import Point, LineString
+from shapely.geometry import Point, LineString # Used in find_closest_way
 from rtree import index
 import psycopg2
 import psycopg2.extras
@@ -32,9 +32,15 @@ def osm_tag_to_boolean(value):
         return True
     if val_lower in ['no', 'false', '0']:
         return False
-    # For any other non-recognized string, return None (SQL NULL)
-    # or you could raise an error if strict parsing is needed.
     return None
+
+def coords_to_wkt_linestring(coords):
+    """Converts a list of [lat, lon] coordinates to WKT LINESTRING(lon lat, ...)."""
+    if not coords or len(coords) < 2:
+        return None
+    # Ensure order is lon lat for WKT
+    point_strs = [f"{coord[1]} {coord[0]}" for coord in coords]
+    return f"LINESTRING({', '.join(point_strs)})"
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -50,7 +56,7 @@ def parse_args():
     )
     parser.add_argument(
         "--index-file", required=True,
-        help="Path to the pre-built spatial index file (e.g., spatial_index.idx or just spatial_index as base name for .idx/.dat files)"
+        help="Path to the pre-built spatial index file (e.g., spatial_index as base name for .idx/.dat files)"
     )
     parser.add_argument(
         "--cache-file", required=True,
@@ -123,7 +129,7 @@ def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
         print(f"DEBUG: Spatial index has invalid or empty bounds: {getattr(spatial_idx, 'bounds', 'N/A')}. Cannot perform intersection.", file=sys.stderr)
         return None
 
-    r_deg = radius_m / 111000.0 * 1.5
+    r_deg = radius_m / 111000.0 * 1.5 # Approximate conversion
     bbox = (lon - r_deg, lat - r_deg, lon + r_deg, lat + r_deg)
     try:
         candidates = list(spatial_idx.intersection(bbox, objects=True))
@@ -144,12 +150,13 @@ def find_closest_way(lat, lon, radius_m=QUERY_RADIUS_METERS):
         if not data or 'geometry' not in data:
             continue
         
+        # Shapely LineString expects (lon, lat) tuples
         line_coords_lon_lat = [(pt[1], pt[0]) for pt in data['geometry']]
         if len(line_coords_lon_lat) < 2:
             continue
         line = LineString(line_coords_lon_lat)
         
-        projected_dist = point_geom.distance(line)
+        projected_dist = point_geom.distance(line) # Cartesian distance
 
         if projected_dist < min_projected_dist:
             min_projected_dist = projected_dist
@@ -192,12 +199,13 @@ if __name__ == '__main__':
         cur = conn.cursor()
         print("Database connection successful.", file=sys.stderr)
         
+        # Updated INSERT statement for PostGIS geometry and new table structure
         insert_sql_template = """
         INSERT INTO road_segment_results (
-          input_latitude,input_longitude,input_source_identifier,
-          found_osm_way_id,geometry_coords,road_name,highway_type,
-          maxspeed,lanes,oneway,surface,ref,lit,bridge,tunnel,access,service,
-          distance_to_input_point_meters,query_radius_used,segment_length_meters
+          input_latitude, input_longitude, input_source_identifier,
+          found_osm_way_id, geometry, road_name, highway_type,
+          maxspeed, lanes, oneway, surface, ref, lit, bridge, tunnel, access, service,
+          distance_to_input_point_meters, query_radius_used, segment_length_meters
         ) VALUES %s;
         """
 
@@ -225,28 +233,33 @@ if __name__ == '__main__':
                     continue
                 
                 found_ways_count += 1
-                geom_json = json.dumps(found_way_data['geometry'])
                 
-                # Convert boolean-like fields
+                # Convert geometry to WKT LINESTRING
+                geometry_wkt = coords_to_wkt_linestring(found_way_data['geometry'])
+                if not geometry_wkt:
+                    print(f"Skipping row {i} due to invalid geometry for way {found_way_data['way_id']}", file=sys.stderr)
+                    continue
+
                 oneway_bool = osm_tag_to_boolean(found_way_data.get('oneway'))
-                lit_bool = osm_tag_to_boolean(found_way_data.get('lit'))
-                bridge_bool = osm_tag_to_boolean(found_way_data.get('bridge'))
-                tunnel_bool = osm_tag_to_boolean(found_way_data.get('tunnel'))
+                # lit, bridge, tunnel are now TEXT, so get directly
+                lit_text = found_way_data.get('lit')
+                bridge_text = found_way_data.get('bridge')
+                tunnel_text = found_way_data.get('tunnel')
                 
                 record_tuple = (
-                    lat, lon, str(i), 
+                    lat, lon, str(i), # input_latitude, input_longitude, input_source_identifier
                     found_way_data['way_id'], 
-                    geom_json, 
+                    geometry_wkt, # geometry (WKT)
                     found_way_data.get('name'), 
                     found_way_data.get('highway'),
                     found_way_data.get('maxspeed'), 
                     found_way_data.get('lanes'), 
-                    oneway_bool, # Use converted value
+                    oneway_bool, # oneway (BOOLEAN)
                     found_way_data.get('surface'),
                     found_way_data.get('ref'), 
-                    lit_bool,    # Use converted value
-                    bridge_bool, # Use converted value
-                    tunnel_bool, # Use converted value
+                    lit_text,    # lit (TEXT)
+                    bridge_text, # bridge (TEXT)
+                    tunnel_text, # tunnel (TEXT)
                     found_way_data.get('access'), 
                     found_way_data.get('service'), 
                     found_way_data['distance_to_input_point_meters'],
